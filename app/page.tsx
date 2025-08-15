@@ -8,6 +8,8 @@ import MainMenu from './components/MainMenu';
 import ChessBoard from './components/ChessBoard';
 import GameInfo from './components/GameInfo';
 import './globals.css';
+import { useSearchParams } from "next/navigation"
+
 
 const chessEngine = ChessEngine.getInstance();
 
@@ -15,6 +17,9 @@ const GAME_SESSION_UUID = 'chess-game-session-' + Math.random().toString(36).sub
 const PLAYER_UUID = 'player-' + Math.random().toString(36).substr(2, 9);
 
 export default function ChessGame() {
+  const searchParams = useSearchParams();
+  const gameSessionUuid = searchParams?.get("gameSessionUuid") || GAME_SESSION_UUID;
+  const playerUuid = searchParams?.get("uuid") || PLAYER_UUID;
   const [socket, setSocket] = useState<Socket | null>(null);
   const [gameState, setGameState] = useState<GameState>({
     board: chessEngine.initializeBoard(),
@@ -27,10 +32,10 @@ export default function ChessGame() {
     winner: null,
     gameMode: 'single',
     difficulty: 'medium',
-    gameSessionUuid: GAME_SESSION_UUID,
-    playerUuid: PLAYER_UUID,
+    gameSessionUuid: gameSessionUuid,
+    playerUuid: playerUuid,
     playerColor: 'white',
-    currentTurn: PLAYER_UUID,
+    currentTurn: playerUuid,
     isMyTurn: true
   });
   const [showMenu, setShowMenu] = useState(true);
@@ -46,19 +51,21 @@ export default function ChessGame() {
       newSocket.on('connect', () => {
         console.log('Connected to server');
         newSocket.emit('join-game', {
-          gameSessionUuid: GAME_SESSION_UUID,
-          playerUuid: PLAYER_UUID
+          gameSessionUuid: gameSessionUuid,
+          playerUuid: playerUuid
         });
+        console.log('Player joined:', playerUuid);
+        console.log('Game session UUID:', gameSessionUuid);
       });
 
       newSocket.on('move-made', (data: MoveData) => {
-        if (data.playerUuid !== PLAYER_UUID) {
+        if (data.playerUuid !== playerUuid) {
           setGameState(prev => ({
             ...prev,
             board: data.gameBoard,
-            currentPlayer: data.currentTurn === PLAYER_UUID ? prev.playerColor! : (prev.playerColor === 'white' ? 'black' : 'white'),
+            currentPlayer: data.currentTurn === playerUuid ? prev.playerColor! : (prev.playerColor === 'white' ? 'black' : 'white'),
             currentTurn: data.currentTurn,
-            isMyTurn: data.currentTurn === PLAYER_UUID,
+            isMyTurn: data.currentTurn === playerUuid,
             gameStatus: data.gameStatus,
             isCheck: data.isCheck,
             winner: data.winner,
@@ -72,13 +79,13 @@ export default function ChessGame() {
         setGameState(prev => ({
           ...prev,
           gameStatus: 'checkmate',
-          winner: data.winner === PLAYER_UUID ? prev.playerColor! : (prev.playerColor === 'white' ? 'black' : 'white')
+          winner: data.winner === playerUuid ? prev.playerColor! : (prev.playerColor === 'white' ? 'black' : 'white')
         }));
       });
 
       newSocket.on('player-joined', (data: { playerUuid: string }) => {
         console.log('Player joined:', data.playerUuid);
-        if (data.playerUuid !== PLAYER_UUID) {
+        if (data.playerUuid !== playerUuid) {
           setGameState(prev => ({
             ...prev,
             gameStatus: 'playing'
@@ -96,13 +103,13 @@ export default function ChessGame() {
 
   // AI move logic
   useEffect(() => {
-    if (gameState.gameMode === 'single' && 
-        gameState.currentPlayer === 'black' && 
-        gameState.gameStatus === 'playing' && 
-        !isAiThinking) {
-      
+    if (gameState.gameMode === 'single' &&
+      gameState.currentPlayer === 'black' &&
+      gameState.gameStatus === 'playing' &&
+      !isAiThinking) {
+
       setIsAiThinking(true);
-      
+
       setTimeout(() => {
         const aiMove = chessEngine.getBestMove(gameState.board, 'black', gameState.difficulty!);
         if (aiMove) {
@@ -116,7 +123,7 @@ export default function ChessGame() {
   const startGame = (mode: GameMode, difficulty?: Difficulty) => {
     const newBoard = chessEngine.initializeBoard();
     const playerColor: PieceColor = mode === 'multiplayer' ? 'white' : 'white';
-    
+
     setGameState({
       board: newBoard,
       currentPlayer: 'white',
@@ -128,10 +135,10 @@ export default function ChessGame() {
       winner: null,
       gameMode: mode,
       difficulty: difficulty || 'medium',
-      gameSessionUuid: GAME_SESSION_UUID,
-      playerUuid: PLAYER_UUID,
+      gameSessionUuid: gameSessionUuid,
+      playerUuid: playerUuid,
       playerColor,
-      currentTurn: PLAYER_UUID,
+      currentTurn: playerUuid,
       isMyTurn: true
     });
     setShowMenu(false);
@@ -143,19 +150,19 @@ export default function ChessGame() {
     const isCheck = chessEngine.isInCheck(newBoard, opponentColor);
     const isCheckmate = chessEngine.isCheckmate(newBoard, opponentColor);
     const isStalemate = chessEngine.isStalemate(newBoard, opponentColor);
-    
+
     let newGameStatus = gameState.gameStatus;
     let winner = null;
-    
+
     if (isCheckmate) {
       newGameStatus = 'checkmate';
       winner = gameState.currentPlayer;
     } else if (isStalemate) {
       newGameStatus = 'stalemate';
     }
-    
+
     const newMoveHistory = [...gameState.moveHistory, move];
-    
+
     setGameState(prev => ({
       ...prev,
       board: newBoard,
@@ -178,18 +185,29 @@ export default function ChessGame() {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            gameSessionUuid: GAME_SESSION_UUID,
-            playerUuid: PLAYER_UUID,
+            gameSessionUuid: gameSessionUuid,
+            playerUuid: playerUuid,
             move
           }),
         });
+        const text = await response.text();
+        if (!response.ok) {
+          console.error('game-move failed:', text);
+          return;
+        }
+        const result1 = JSON.parse(text);
+        if (!result1.status) {
+          console.error('game-move rejected:', result1);
+          return;
+        }
+
 
         const result = await response.json();
-        
+
         if (result.status) {
           socket.emit('make-move', {
-            gameSessionUuid: GAME_SESSION_UUID,
-            playerUuid: PLAYER_UUID,
+            gameSessionUuid: gameSessionUuid,
+            playerUuid: playerUuid,
             move,
             gameBoard: result.payload.gameBoard,
             currentTurn: result.payload.currentTurn,
@@ -200,10 +218,10 @@ export default function ChessGame() {
 
           if (result.payload.winner) {
             socket.emit('game-won', {
-              gameSessionUuid: GAME_SESSION_UUID,
+              gameSessionUuid: gameSessionUuid,
               winner: result.payload.winner
             });
-            
+
             // Send winner to external API
             await fetch('/api/send-winner', {
               method: 'POST',
@@ -211,7 +229,7 @@ export default function ChessGame() {
                 'Content-Type': 'application/json',
               },
               body: JSON.stringify({
-                gameSessionUuid: GAME_SESSION_UUID,
+                gameSessionUuid: gameSessionUuid,
                 winner: result.payload.winner
               }),
             });
@@ -229,27 +247,27 @@ export default function ChessGame() {
     if (gameState.gameMode === 'single' && gameState.currentPlayer === 'black') return;
 
     const piece = gameState.board[position.row][position.col];
-    
+
     // If clicking on a valid move square
-    if (gameState.selectedSquare && 
-        gameState.validMoves.some(move => move.row === position.row && move.col === position.col)) {
-      
+    if (gameState.selectedSquare &&
+      gameState.validMoves.some(move => move.row === position.row && move.col === position.col)) {
+
       const move: Move = {
         from: gameState.selectedSquare,
         to: position,
         piece: gameState.board[gameState.selectedSquare.row][gameState.selectedSquare.col]!,
         capturedPiece: piece || undefined
       };
-      
+
       makeMove(move);
       return;
     }
-    
+
     // If clicking on own piece
     if (piece && piece.color === gameState.currentPlayer) {
       const validMoves = chessEngine.getPieceValidMoves(gameState.board, position)
         .map(move => move.to);
-      
+
       setGameState(prev => ({
         ...prev,
         selectedSquare: position,
@@ -308,7 +326,7 @@ export default function ChessGame() {
             </div>
           )}
         </div>
-        
+
         <div className="game-info-section">
           <GameInfo
             gameState={gameState}
