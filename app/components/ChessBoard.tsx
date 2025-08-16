@@ -1,88 +1,103 @@
-'use client';
+"use client"
 
-import React from 'react';
-import { ChessPiece, Position, GameState, Move } from '../types/chess';
-import ChessSquare from './ChessSquare';
-import './ChessBoard.css';
+import { ChessPiece, Position } from '@/app/types/chess'
+import { ChessSquare } from './ChessSquare'
+import { ChessPieceComponent } from './ChessPieceComponent'
 
 interface ChessBoardProps {
-  gameState: GameState;
-  onSquareClick: (position: Position) => void;
-  onMove: (move: Move) => void;
+  board: (ChessPiece | null)[][]
+  selectedSquare: Position | null
+  validMoves: Position[]
+  onSquareClick: (position: Position) => void
+  isMyTurn: boolean
+  playerColor: 'white' | 'black'
+  lastMove: { from: Position; to: Position } | null
 }
 
-const ChessBoard: React.FC<ChessBoardProps> = ({ gameState, onSquareClick, onMove }) => {
-  const { board, selectedSquare, validMoves, currentPlayer, gameMode, isMyTurn } = gameState;
+export function ChessBoard({
+  board,
+  selectedSquare,
+  validMoves,
+  onSquareClick,
+  isMyTurn,
+  playerColor,
+  lastMove
+}: ChessBoardProps) {
+  const isSquareSelected = (row: number, col: number) => {
+    return selectedSquare?.row === row && selectedSquare?.col === col
+  }
 
-  const isSquareSelected = (row: number, col: number): boolean => {
-    return selectedSquare?.row === row && selectedSquare?.col === col;
-  };
+  const isValidMove = (row: number, col: number) => {
+    return validMoves.some(move => move.row === row && move.col === col)
+  }
 
-  const isValidMove = (row: number, col: number): boolean => {
-    return validMoves.some(move => move.row === row && move.col === col);
-  };
-
-  const isSquareHighlighted = (row: number, col: number): boolean => {
-    const lastMove = gameState.moveHistory[gameState.moveHistory.length - 1];
-    if (!lastMove) return false;
-    return (lastMove.from.row === row && lastMove.from.col === col) ||
-           (lastMove.to.row === row && lastMove.to.col === col);
-  };
-
-  const handleSquareClick = (row: number, col: number) => {
-    if (gameMode === 'multiplayer' && !isMyTurn) return;
-    onSquareClick({ row, col });
-  };
+  const isLastMove = (row: number, col: number): boolean => {
+    return !!lastMove && (
+      (lastMove.from.row === row && lastMove.from.col === col) ||
+      (lastMove.to.row === row && lastMove.to.col === col)
+    )
+  }
 
   const renderBoard = () => {
-    const squares = [];
-    for (let row = 0; row < 8; row++) {
-      for (let col = 0; col < 8; col++) {
-        const piece = board[row][col];
-        const isLight = (row + col) % 2 === 0;
-        const isSelected = isSquareSelected(row, col);
-        const isValid = isValidMove(row, col);
-        const isHighlighted = isSquareHighlighted(row, col);
-        
+    const squares = []
+    const startRow = playerColor === 'white' ? 0 : 7
+    const endRow = playerColor === 'white' ? 8 : -1
+    const rowIncrement = playerColor === 'white' ? 1 : -1
+
+    for (let row = startRow; row !== endRow; row += rowIncrement) {
+      const startCol = playerColor === 'white' ? 0 : 7
+      const endCol = playerColor === 'white' ? 8 : -1
+      const colIncrement = playerColor === 'white' ? 1 : -1
+
+      for (let col = startCol; col !== endCol; col += colIncrement) {
+        const piece = board[row][col]
+        const isLight = (row + col) % 2 === 0
+        const position = { row, col }
+
         squares.push(
           <ChessSquare
             key={`${row}-${col}`}
-            piece={piece}
-            position={{ row, col }}
+            position={position}
             isLight={isLight}
-            isSelected={isSelected}
-            isValidMove={isValid}
-            isHighlighted={isHighlighted}
-            onClick={() => handleSquareClick(row, col)}
-            disabled={gameMode === 'multiplayer' && !isMyTurn}
-          />
-        );
+            isSelected={isSquareSelected(row, col)}
+            isValidMove={isValidMove(row, col)}
+            isLastMove={isLastMove(row, col)}
+            onClick={() => onSquareClick(position)}
+            disabled={!isMyTurn}
+          >
+            {piece && (
+              <ChessPieceComponent
+                piece={piece}
+                position={position}
+                isSelected={isSquareSelected(row, col)}
+              />
+            )}
+          </ChessSquare>
+        )
       }
     }
-    return squares;
-  };
+
+    return squares
+  }
 
   return (
-    <div className="chess-board-container">
-      <div className="chess-board">
-        <div className="board-grid">
-          {renderBoard()}
-        </div>
-        <div className="board-coordinates">
-          <div className="files">
-            {['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'].map(file => (
-              <span key={file} className="file-label">{file}</span>
-            ))}
-          </div>
-          <div className="ranks">
-            {[8, 7, 6, 5, 4, 3, 2, 1].map(rank => (
-              <span key={rank} className="rank-label">{rank}</span>
-            ))}
-          </div>
-        </div>
+    <div className="relative">
+      <div className="grid grid-cols-8 gap-0 w-96 h-96 border-4 border-amber-800 rounded-lg shadow-2xl bg-gradient-to-br from-amber-100 to-amber-200">
+        {renderBoard()}
+      </div>
+      
+      {/* Coordinate labels */}
+      <div className="absolute -left-6 top-0 h-full flex flex-col justify-around text-xs font-bold text-amber-800">
+        {(playerColor === 'white' ? ['8', '7', '6', '5', '4', '3', '2', '1'] : ['1', '2', '3', '4', '5', '6', '7', '8']).map(num => (
+          <div key={num} className="h-12 flex items-center">{num}</div>
+        ))}
+      </div>
+      
+      <div className="absolute -bottom-6 left-0 w-full flex justify-around text-xs font-bold text-amber-800">
+        {(playerColor === 'white' ? ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'] : ['h', 'g', 'f', 'e', 'd', 'c', 'b', 'a']).map(letter => (
+          <div key={letter} className="w-12 text-center">{letter}</div>
+        ))}
       </div>
     </div>
-  );
-};
-
-export default ChessBoard;
+  )
+}

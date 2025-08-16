@@ -1,323 +1,491 @@
-'use client';
+"use client"
 
-import React, { useState, useEffect, useCallback } from 'react';
-import { io, Socket } from 'socket.io-client';
-import { GameState, GameMode, Difficulty, Position, Move, ChessPiece, PieceColor, MoveData } from './types/chess';
-import { ChessEngine } from './components/ChessEngine';
-import MainMenu from './components/MainMenu';
-import ChessBoard from './components/ChessBoard';
-import GameInfo from './components/GameInfo';
-import './globals.css';
+import { useState, useEffect, useRef, useCallback, Suspense } from "react"
+import { useSearchParams } from "next/navigation"
+import { ChessBoard } from "./components/ChessBoard"
+import { GameStatus } from "./components/GameStatus"
+import { CapturedPieces } from "./components/CapturedPieces"
+import { ChessLogic } from "./components/ChessLogic"
+import { GameState, Position, PieceColor, ChessPiece } from "./types/chess"
 
-const chessEngine = ChessEngine.getInstance();
+interface Player {
+  uuid: string;
+  name: string;
+  profileImage: string;
+}
 
-const GAME_SESSION_UUID = 'chess-game-session-' + Math.random().toString(36).substr(2, 9);
-const PLAYER_UUID = 'player-' + Math.random().toString(36).substr(2, 9);
+interface MoveHistoryItem {
+  from: Position;
+  to: Position;
+  capturedPiece?: ChessPiece;
+}
 
-export default function ChessGame() {
-  const [socket, setSocket] = useState<Socket | null>(null);
-  const [gameState, setGameState] = useState<GameState>({
-    board: chessEngine.initializeBoard(),
-    currentPlayer: 'white',
-    gameStatus: 'waiting',
-    selectedSquare: null,
-    validMoves: [],
-    moveHistory: [],
-    isCheck: false,
-    winner: null,
-    gameMode: 'single',
-    difficulty: 'medium',
-    gameSessionUuid: GAME_SESSION_UUID,
-    playerUuid: PLAYER_UUID,
-    playerColor: 'white',
-    currentTurn: PLAYER_UUID,
-    isMyTurn: true
-  });
-  const [showMenu, setShowMenu] = useState(true);
-  const [isAiThinking, setIsAiThinking] = useState(false);
+interface CapturedPiecesData {
+  white: ChessPiece[];
+  black: ChessPiece[];
+}
 
-  // Initialize socket connection for multiplayer
-  useEffect(() => {
-    if (gameState.gameMode === 'multiplayer') {
-      const newSocket = io({
-        path: '/api/socket',
-      });
-
-      newSocket.on('connect', () => {
-        console.log('Connected to server');
-        newSocket.emit('join-game', {
-          gameSessionUuid: GAME_SESSION_UUID,
-          playerUuid: PLAYER_UUID
-        });
-      });
-
-      newSocket.on('move-made', (data: MoveData) => {
-        if (data.playerUuid !== PLAYER_UUID) {
-          setGameState(prev => ({
-            ...prev,
-            board: data.gameBoard,
-            currentPlayer: data.currentTurn === PLAYER_UUID ? prev.playerColor! : (prev.playerColor === 'white' ? 'black' : 'white'),
-            currentTurn: data.currentTurn,
-            isMyTurn: data.currentTurn === PLAYER_UUID,
-            gameStatus: data.gameStatus,
-            isCheck: data.isCheck,
-            winner: data.winner,
-            selectedSquare: null,
-            validMoves: []
-          }));
-        }
-      });
-
-      newSocket.on('game-ended', (data: { winner: string }) => {
-        setGameState(prev => ({
-          ...prev,
-          gameStatus: 'checkmate',
-          winner: data.winner === PLAYER_UUID ? prev.playerColor! : (prev.playerColor === 'white' ? 'black' : 'white')
-        }));
-      });
-
-      newSocket.on('player-joined', (data: { playerUuid: string }) => {
-        console.log('Player joined:', data.playerUuid);
-        if (data.playerUuid !== PLAYER_UUID) {
-          setGameState(prev => ({
-            ...prev,
-            gameStatus: 'playing'
-          }));
-        }
-      });
-
-      setSocket(newSocket);
-
-      return () => {
-        newSocket.disconnect();
-      };
-    }
-  }, [gameState.gameMode]);
-
-  // AI move logic
-  useEffect(() => {
-    if (gameState.gameMode === 'single' && 
-        gameState.currentPlayer === 'black' && 
-        gameState.gameStatus === 'playing' && 
-        !isAiThinking) {
-      
-      setIsAiThinking(true);
-      
-      setTimeout(() => {
-        const aiMove = chessEngine.getBestMove(gameState.board, 'black', gameState.difficulty!);
-        if (aiMove) {
-          makeMove(aiMove);
-        }
-        setIsAiThinking(false);
-      }, 500); // Add delay for better UX
-    }
-  }, [gameState.currentPlayer, gameState.gameStatus, gameState.gameMode, isAiThinking]);
-
-  const startGame = (mode: GameMode, difficulty?: Difficulty) => {
-    const newBoard = chessEngine.initializeBoard();
-    const playerColor: PieceColor = mode === 'multiplayer' ? 'white' : 'white';
-    
-    setGameState({
-      board: newBoard,
-      currentPlayer: 'white',
-      gameStatus: mode === 'multiplayer' ? 'waiting' : 'playing',
-      selectedSquare: null,
-      validMoves: [],
-      moveHistory: [],
-      isCheck: false,
-      winner: null,
-      gameMode: mode,
-      difficulty: difficulty || 'medium',
-      gameSessionUuid: GAME_SESSION_UUID,
-      playerUuid: PLAYER_UUID,
-      playerColor,
-      currentTurn: PLAYER_UUID,
-      isMyTurn: true
-    });
-    setShowMenu(false);
+interface Room {
+  players: Player[];
+  gameBoard: (ChessPiece | null)[][];
+  currentTurn: string;
+  gameStatus: string;
+  winner: string | null;
+  moveHistory: MoveHistoryItem[];
+  capturedPieces: CapturedPiecesData;
+  lastMove: { from: Position; to: Position } | null;
+  enPassantTarget: Position | null;
+  castlingRights: {
+    whiteKingSide: boolean;
+    whiteQueenSide: boolean;
+    blackKingSide: boolean;
+    blackQueenSide: boolean;
   };
+}
 
-  const makeMove = useCallback(async (move: Move) => {
-    const newBoard = chessEngine.makeMove(gameState.board, move);
-    const opponentColor: PieceColor = gameState.currentPlayer === 'white' ? 'black' : 'white';
-    const isCheck = chessEngine.isInCheck(newBoard, opponentColor);
-    const isCheckmate = chessEngine.isCheckmate(newBoard, opponentColor);
-    const isStalemate = chessEngine.isStalemate(newBoard, opponentColor);
-    
-    let newGameStatus = gameState.gameStatus;
-    let winner = null;
-    
-    if (isCheckmate) {
-      newGameStatus = 'checkmate';
-      winner = gameState.currentPlayer;
-    } else if (isStalemate) {
-      newGameStatus = 'stalemate';
-    }
-    
-    const newMoveHistory = [...gameState.moveHistory, move];
-    
-    setGameState(prev => ({
-      ...prev,
-      board: newBoard,
-      currentPlayer: opponentColor,
-      gameStatus: newGameStatus,
-      selectedSquare: null,
-      validMoves: [],
-      moveHistory: newMoveHistory,
-      isCheck,
-      winner,
-      isMyTurn: gameState.gameMode === 'single' ? true : !prev.isMyTurn
-    }));
+function ChessGameContent() {
+  const searchParams = useSearchParams()
+  const [gameState, setGameState] = useState<GameState>(ChessLogic.createInitialGameState())
+  const [selectedSquare, setSelectedSquare] = useState<Position | null>(null)
+  const [validMoves, setValidMoves] = useState<Position[]>([])
+  const [room, setRoom] = useState<Room | null>(null)
+  const [currentPlayer, setCurrentPlayer] = useState<Player | null>(null)
+  const [opponent, setOpponent] = useState<Player | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [gameOver, setGameOver] = useState(false)
+  const [connectionStatus, setConnectionStatus] = useState("Connecting...")
+  const [lastMove, setLastMove] = useState<{ from: Position; to: Position } | null>(null)
+  const pollingRef = useRef<NodeJS.Timeout | null>(null)
 
-    // Handle multiplayer move
-    if (gameState.gameMode === 'multiplayer' && socket) {
-      try {
-        const response = await fetch('/api/game-move', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            gameSessionUuid: GAME_SESSION_UUID,
-            playerUuid: PLAYER_UUID,
-            move
-          }),
-        });
+  const gameSessionUuid = searchParams.get("gameSessionUuid")
+  const playerUuid = searchParams.get("uuid")
 
-        const result = await response.json();
+  const fetchGameState = useCallback(async () => {
+    try {
+      const response = await fetch(`/api/get-room?gameSessionUuid=${gameSessionUuid}`)
+      const data = await response.json()
+
+      if (data.status && data.payload) {
+        const gameData = data.payload
         
-        if (result.status) {
-          socket.emit('make-move', {
-            gameSessionUuid: GAME_SESSION_UUID,
-            playerUuid: PLAYER_UUID,
-            move,
-            gameBoard: result.payload.gameBoard,
-            currentTurn: result.payload.currentTurn,
-            gameStatus: result.payload.gameStatus,
-            isCheck: result.payload.isCheck,
-            winner: result.payload.winner
-          });
-
-          if (result.payload.winner) {
-            socket.emit('game-won', {
-              gameSessionUuid: GAME_SESSION_UUID,
-              winner: result.payload.winner
-            });
-            
-            // Send winner to external API
-            await fetch('/api/send-winner', {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-              },
-              body: JSON.stringify({
-                gameSessionUuid: GAME_SESSION_UUID,
-                winner: result.payload.winner
-              }),
-            });
+        if (gameData.gameBoard) {
+          const newGameState: GameState = {
+            board: gameData.gameBoard,
+            currentTurn: gameData.currentTurn === room?.players[0]?.uuid ? 'white' : 'black',
+            gameStatus: gameData.gameStatus || 'active',
+            winner: gameData.winner ? (gameData.winner === room?.players[0]?.uuid ? 'white' : 'black') : null,
+            moveHistory: gameData.moveHistory || [],
+            capturedPieces: gameData.capturedPieces || { white: [], black: [] },
+            enPassantTarget: gameData.enPassantTarget || null,
+            castlingRights: gameData.castlingRights || {
+              whiteKingSide: true,
+              whiteQueenSide: true,
+              blackKingSide: true,
+              blackQueenSide: true
+            }
+          }
+          
+          setGameState(newGameState)
+          
+          if (gameData.lastMove) {
+            setLastMove(gameData.lastMove)
           }
         }
-      } catch (error) {
-        console.error('Error making multiplayer move:', error);
+
+        if (gameData.winner || gameData.gameStatus === 'checkmate' || gameData.gameStatus === 'stalemate') {
+          setGameOver(true)
+          if (pollingRef.current) {
+            clearInterval(pollingRef.current)
+          }
+        }
+
+        setConnectionStatus("Connected")
+      }
+    } catch (error) {
+      console.error("Error fetching game state:", error)
+      setConnectionStatus("Connection Error")
+    }
+  }, [gameSessionUuid, room?.players])
+
+  const startPolling = useCallback(() => {
+    pollingRef.current = setInterval(() => {
+      if (!gameOver) {
+        fetchGameState()
+      }
+    }, 1000)
+  }, [gameOver, fetchGameState])
+
+  const initializeGame = useCallback(async () => {
+    try {
+      const response = await fetch(`/api/get-room?gameSessionUuid=${gameSessionUuid}`)
+      const data = await response.json()
+
+      if (data.status && data.payload) {
+        setRoom(data.payload)
+        
+        const current = data.payload.players.find((p: Player) => p.uuid === playerUuid)
+        const opp = data.payload.players.find((p: Player) => p.uuid !== playerUuid)
+
+        setCurrentPlayer(current || null)
+        setOpponent(opp || null)
+
+        // Initialize game board if it exists
+        if (data.payload.gameBoard) {
+          const newGameState: GameState = {
+            board: data.payload.gameBoard,
+            currentTurn: data.payload.currentTurn === data.payload.players[0]?.uuid ? 'white' : 'black',
+            gameStatus: data.payload.gameStatus || 'active',
+            winner: data.payload.winner ? (data.payload.winner === data.payload.players[0]?.uuid ? 'white' : 'black') : null,
+            moveHistory: data.payload.moveHistory || [],
+            capturedPieces: data.payload.capturedPieces || { white: [], black: [] },
+            enPassantTarget: data.payload.enPassantTarget || null,
+            castlingRights: data.payload.castlingRights || {
+              whiteKingSide: true,
+              whiteQueenSide: true,
+              blackKingSide: true,
+              blackQueenSide: true
+            }
+          }
+          setGameState(newGameState)
+        } else {
+          // Initialize with starting position
+          const initialState = ChessLogic.createInitialGameState()
+          setGameState(initialState)
+        }
+
+        if (data.payload.winner || data.payload.gameStatus === 'checkmate') {
+          setGameOver(true)
+        } else {
+          setConnectionStatus("Connected - Game Active")
+        }
+      }
+      setLoading(false)
+    } catch (error) {
+      console.error("Error fetching room data:", error)
+      setLoading(false)
+    }
+  }, [gameSessionUuid, playerUuid])
+
+  useEffect(() => {
+    if (gameSessionUuid && playerUuid) {
+      initializeGame()
+      startPolling()
+    }
+
+    return () => {
+      if (pollingRef.current) {
+        clearInterval(pollingRef.current)
       }
     }
-  }, [gameState, socket]);
+  }, [gameSessionUuid, playerUuid, initializeGame, startPolling])
 
-  const handleSquareClick = (position: Position) => {
-    if (gameState.gameStatus !== 'playing') return;
-    if (gameState.gameMode === 'multiplayer' && !gameState.isMyTurn) return;
-    if (gameState.gameMode === 'single' && gameState.currentPlayer === 'black') return;
+  const handleSquareClick = async (position: Position) => {
+    if (gameOver || !isMyTurn()) return
 
-    const piece = gameState.board[position.row][position.col];
+    const piece = ChessLogic.getPieceAt(gameState.board, position)
     
-    // If clicking on a valid move square
-    if (gameState.selectedSquare && 
-        gameState.validMoves.some(move => move.row === position.row && move.col === position.col)) {
-      
-      const move: Move = {
-        from: gameState.selectedSquare,
-        to: position,
-        piece: gameState.board[gameState.selectedSquare.row][gameState.selectedSquare.col]!,
-        capturedPiece: piece || undefined
-      };
-      
-      makeMove(move);
-      return;
-    }
-    
-    // If clicking on own piece
-    if (piece && piece.color === gameState.currentPlayer) {
-      const validMoves = chessEngine.getPieceValidMoves(gameState.board, position)
-        .map(move => move.to);
-      
-      setGameState(prev => ({
-        ...prev,
-        selectedSquare: position,
-        validMoves
-      }));
+    if (selectedSquare) {
+      // Try to make a move
+      if (validMoves.some(move => move.row === position.row && move.col === position.col)) {
+        await makeMove(selectedSquare, position)
+      } else if (piece && piece.color === getPlayerColor()) {
+        // Select different piece
+        setSelectedSquare(position)
+        setValidMoves(ChessLogic.getValidMoves(gameState, position))
+      } else {
+        // Deselect
+        setSelectedSquare(null)
+        setValidMoves([])
+      }
     } else {
-      // Deselect
-      setGameState(prev => ({
-        ...prev,
-        selectedSquare: null,
-        validMoves: []
-      }));
+      // Select piece
+      if (piece && piece.color === getPlayerColor()) {
+        setSelectedSquare(position)
+        setValidMoves(ChessLogic.getValidMoves(gameState, position))
+      }
     }
-  };
-
-  const handleNewGame = () => {
-    if (gameState.gameMode === 'multiplayer' && socket) {
-      socket.disconnect();
-    }
-    startGame(gameState.gameMode, gameState.difficulty);
-  };
-
-  const handleBackToMenu = () => {
-    if (gameState.gameMode === 'multiplayer' && socket) {
-      socket.disconnect();
-    }
-    setShowMenu(true);
-  };
-
-  const handleDifficultyChange = (difficulty: Difficulty) => {
-    setGameState(prev => ({
-      ...prev,
-      difficulty
-    }));
-  };
-
-  if (showMenu) {
-    return <MainMenu onStartGame={startGame} />;
   }
 
+  const makeMove = async (from: Position, to: Position) => {
+    try {
+      const response = await fetch("/api/game-move", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          gameSessionUuid,
+          playerUuid,
+          from,
+          to,
+        }),
+      })
+
+      const result = await response.json()
+
+      if (result.status) {
+        const newGameState: GameState = {
+          board: result.payload.gameBoard,
+          currentTurn: result.payload.currentTurn === room?.players[0]?.uuid ? 'white' : 'black',
+          gameStatus: result.payload.gameStatus || 'active',
+          winner: result.payload.winner ? (result.payload.winner === room?.players[0]?.uuid ? 'white' : 'black') : null,
+          moveHistory: result.payload.moveHistory || [],
+          capturedPieces: result.payload.capturedPieces || { white: [], black: [] },
+          enPassantTarget: result.payload.enPassantTarget || null,
+          castlingRights: result.payload.castlingRights || gameState.castlingRights
+        }
+
+        setGameState(newGameState)
+        setSelectedSquare(null)
+        setValidMoves([])
+        setLastMove({ from, to })
+
+        if (result.payload.gameStatus === 'checkmate' || result.payload.gameStatus === 'stalemate') {
+          setGameOver(true)
+          if (pollingRef.current) {
+            clearInterval(pollingRef.current)
+          }
+          
+          if (result.payload.winner) {
+            await sendWinnerData(result.payload.winner)
+          }
+        }
+      }
+    } catch (error) {
+      console.error("Error making move:", error)
+    }
+  }
+
+  const sendWinnerData = async (winnerUuid: string) => {
+    try {
+      const response = await fetch("/api/send-winner", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          gameSessionUuid,
+          winner: winnerUuid,
+        }),
+      })
+
+      const result = await response.json()
+      console.log("Winner data sent:", result)
+    } catch (error) {
+      console.error("Error sending winner data:", error)
+    }
+  }
+
+  const isMyTurn = (): boolean => {
+    if (!room || !currentPlayer) return false
+    const playerColor = getPlayerColor()
+    return gameState.currentTurn === playerColor
+  }
+
+  const getPlayerColor = (): PieceColor => {
+    if (!room || !currentPlayer) return 'white'
+    return room.players[0].uuid === currentPlayer.uuid ? 'white' : 'black'
+  }
+
+  const isInCheck = (): boolean => {
+    return ChessLogic.isInCheck(gameState, gameState.currentTurn)
+  }
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-amber-50 via-orange-50 to-red-50 flex items-center justify-center">
+        <div className="text-center bg-white rounded-2xl p-8 shadow-2xl">
+          <div className="animate-spin w-12 h-12 border-4 border-amber-500 border-t-transparent rounded-full mx-auto mb-4"></div>
+          <div className="text-2xl font-bold text-gray-800 mb-2">Loading Chess Game...</div>
+          <div className="text-sm text-gray-600">{connectionStatus}</div>
+        </div>
+      </div>
+    )
+  }
+
+  if (!room || !currentPlayer || !opponent) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-red-50 to-red-100 flex items-center justify-center">
+        <div className="text-center bg-white rounded-2xl p-8 shadow-2xl">
+          <div className="text-6xl mb-4">⚠️</div>
+          <div className="text-2xl font-bold text-red-600">Game Error</div>
+          <div className="text-gray-600 mt-2">Could not load game data</div>
+        </div>
+      </div>
+    )
+  }
+
+  const playerColor = getPlayerColor()
+  const myTurn = isMyTurn()
+
   return (
-    <div className="chess-game">
-      <div className="game-container">
-        <div className="game-board-section">
-          <ChessBoard
-            gameState={gameState}
-            onSquareClick={handleSquareClick}
-            onMove={makeMove}
-          />
-          {isAiThinking && (
-            <div className="ai-thinking">
-              <div className="thinking-indicator">
-                <div className="spinner"></div>
-                <span>AI is thinking...</span>
+    <div className="min-h-screen bg-gradient-to-br from-amber-50 via-orange-50 to-red-50 py-4">
+      <div className="max-w-7xl mx-auto px-4">
+        {/* Header */}
+        <div className="text-center mb-6">
+          <h1 className="text-5xl font-bold bg-gradient-to-r from-amber-600 to-red-600 bg-clip-text text-transparent mb-2">
+            ♔ Chess Master ♛
+          </h1>
+          <div className={`text-sm px-4 py-2 rounded-full inline-block font-semibold ${
+            connectionStatus.includes("Connected")
+              ? "bg-green-100 text-green-800"
+              : connectionStatus.includes("Error")
+                ? "bg-red-100 text-red-800"
+                : "bg-yellow-100 text-yellow-800"
+          }`}>
+            {connectionStatus}
+          </div>
+        </div>
+
+        {/* Players Info */}
+        <div className="flex justify-between items-center mb-6 bg-white/80 backdrop-blur-sm rounded-2xl p-6 shadow-xl border border-white/20">
+          <div className="flex items-center space-x-4">
+            <div className="relative">
+              <img
+                src={room.players[0].profileImage || "/placeholder.svg?height=80&width=80"}
+                alt={room.players[0].name}
+                className="w-20 h-20 rounded-full border-4 border-white shadow-lg object-cover"
+              />
+              {gameState.currentTurn === 'white' && !gameOver && (
+                <div className="absolute -top-1 -right-1 w-5 h-5 bg-green-500 rounded-full animate-pulse border-2 border-white"></div>
+              )}
+              <div className="absolute -bottom-2 left-1/2 transform -translate-x-1/2 bg-white text-gray-800 px-2 py-1 rounded-full text-xs font-bold shadow-md">
+                ♔ White
               </div>
             </div>
-          )}
+            <div>
+              <h3 className="font-bold text-2xl text-gray-800">{room.players[0].name}</h3>
+              {playerUuid === room.players[0].uuid && (
+                <p className="text-sm text-green-600 font-bold bg-green-100 px-2 py-1 rounded-full inline-block">👤 You</p>
+              )}
+            </div>
+          </div>
+
+          <div className="text-center">
+            <div className="text-4xl font-bold text-gray-600 mb-2">⚔️</div>
+            <div className="text-sm text-gray-500 bg-gray-100 px-3 py-1 rounded-full">
+              Room: {gameSessionUuid?.slice(-6)}
+            </div>
+          </div>
+
+          <div className="flex items-center space-x-4">
+            <div className="text-right">
+              <h3 className="font-bold text-2xl text-gray-800">{room.players[1].name}</h3>
+              {playerUuid === room.players[1].uuid && (
+                <p className="text-sm text-green-600 font-bold bg-green-100 px-2 py-1 rounded-full inline-block">👤 You</p>
+              )}
+            </div>
+            <div className="relative">
+              <img
+                src={room.players[1].profileImage || "/placeholder.svg?height=80&width=80"}
+                alt={room.players[1].name}
+                className="w-20 h-20 rounded-full border-4 border-gray-800 shadow-lg object-cover"
+              />
+              {gameState.currentTurn === 'black' && !gameOver && (
+                <div className="absolute -top-1 -right-1 w-5 h-5 bg-green-500 rounded-full animate-pulse border-2 border-white"></div>
+              )}
+              <div className="absolute -bottom-2 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white px-2 py-1 rounded-full text-xs font-bold shadow-md">
+                ♛ Black
+              </div>
+            </div>
+          </div>
         </div>
-        
-        <div className="game-info-section">
-          <GameInfo
-            gameState={gameState}
-            onNewGame={handleNewGame}
-            onBackToMenu={handleBackToMenu}
-            onDifficultyChange={gameState.gameMode === 'single' ? handleDifficultyChange : undefined}
-          />
+
+        {/* Game Status */}
+        <GameStatus
+          currentTurn={gameState.currentTurn}
+          gameStatus={gameState.gameStatus}
+          winner={gameState.winner}
+          isMyTurn={myTurn}
+          playerColor={playerColor}
+          isCheck={isInCheck()}
+        />
+
+        {/* Main Game Area */}
+        <div className="flex justify-center items-start space-x-8">
+          {/* Captured Pieces - Left */}
+          <div className="w-64">
+            <CapturedPieces
+              capturedPieces={gameState.capturedPieces}
+              playerColor={playerColor}
+            />
+          </div>
+
+          {/* Chess Board */}
+          <div className="flex-shrink-0">
+            <ChessBoard
+              board={gameState.board}
+              selectedSquare={selectedSquare}
+              validMoves={validMoves}
+              onSquareClick={handleSquareClick}
+              isMyTurn={myTurn}
+              playerColor={playerColor}
+              lastMove={lastMove}
+            />
+          </div>
+
+          {/* Game Info - Right */}
+          <div className="w-64 space-y-4">
+            {/* Move History */}
+            <div className="bg-white/80 backdrop-blur-sm rounded-xl p-4 shadow-lg border border-white/20 max-h-96 overflow-y-auto">
+              <h3 className="font-bold text-lg text-gray-800 mb-3 flex items-center">
+                📜 Move History
+              </h3>
+              <div className="space-y-1 text-sm">
+                {gameState.moveHistory.length === 0 ? (
+                  <p className="text-gray-500 italic">No moves yet</p>
+                ) : (
+                  gameState.moveHistory.map((move, index) => (
+                    <div key={index} className="flex justify-between items-center py-1 px-2 rounded bg-gray-50">
+                      <span className="font-mono text-xs">
+                        {index + 1}. {String.fromCharCode(97 + move.from.col)}{8 - move.from.row} → {String.fromCharCode(97 + move.to.col)}{8 - move.to.row}
+                      </span>
+                      {move.capturedPiece && <span className="text-red-500">×</span>}
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
+            {/* Game Controls */}
+            {gameOver && (
+              <div className="bg-white/80 backdrop-blur-sm rounded-xl p-4 shadow-lg border border-white/20 text-center">
+                <div className="text-2xl font-bold mb-4">
+                  {gameState.winner ? (
+                    <span className={gameState.winner === playerColor ? 'text-green-600' : 'text-red-600'}>
+                      {gameState.winner === playerColor ? '🎉 You Win!' : '😔 You Lose'}
+                    </span>
+                  ) : (
+                    <span className="text-yellow-600">🤝 Draw!</span>
+                  )}
+                </div>
+                <button
+                  onClick={() => window.location.reload()}
+                  className="bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 text-white font-bold py-3 px-6 rounded-xl transition-all duration-200 transform hover:scale-105 shadow-lg"
+                >
+                  🔄 New Game
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>
-  );
+  )
+}
+
+export default function ChessGame() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-gradient-to-br from-amber-50 via-orange-50 to-red-50 flex items-center justify-center">
+        <div className="text-center bg-white rounded-2xl p-8 shadow-2xl">
+          <div className="animate-spin w-12 h-12 border-4 border-amber-500 border-t-transparent rounded-full mx-auto mb-4"></div>
+          <div className="text-2xl font-bold text-gray-800 mb-2">Loading Chess Game...</div>
+          <div className="text-sm text-gray-600">Initializing...</div>
+        </div>
+      </div>
+    }>
+      <ChessGameContent />
+    </Suspense>
+  )
 }
